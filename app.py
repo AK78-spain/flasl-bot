@@ -3,21 +3,18 @@ import json
 
 app = Flask(__name__)
 
+@app.route('/', methods=['GET'])
+def home():
+    return 'Bot is running!'
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json  # سیگنال ارسالی از TradingView
-    print("سیگنال دریافت شد:")
-    print(json.dumps(data, indent=2))
+    data = request.json
+    print("Received Webhook:", data)
 
-    # ✅ اینجا می‌توانید دستور معامله را اضافه کنید (بعداً)
-    # مثلاً: خرید، فروش، ارسال به صرافی
+    # اینجا کدی برای اجرای معامله می‌گذاری
+    # مثلاً:
+    # if data['action'] == 'buy':
+    #     execute_trade('buy')
 
-    return "OK", 200
-
-# فقط برای تست (صفحه اصلی)
-@app.route('/')
-def home():
-    return "ربات سیگنال فعال است! 🚀"
-
-if __name__ == '__main__':
-    app.run(debug=True)
+    return 'Webhook received', 200
