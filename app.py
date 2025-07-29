@@ -13,6 +13,8 @@ def webhook():
     print("Received Webhook:", data)
     return "Webhook received", 200
 
+print("✅ JSON Data Received:", data)
+
 # 🔻 این بخش حیاتی است 🔻
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
