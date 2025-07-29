@@ -9,10 +9,12 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
-    print("Received Webhook:", data)
-    return "Webhook received", 200
-
+   data = request.get_json(force=True)
+    
+    # 🔍 این خط پیام رو در لاگ چاپ می‌کنه
+    print("📩 Webhook received:", data)
+    
+    return "✅ Webhook received", 200
 
 # 🔻 این بخش حیاتی است 🔻
 if __name__ == "__main__":
