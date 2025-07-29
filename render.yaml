@@ -1,9 +1,6 @@
 services:
   - type: web
     name: tradingview-bot
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
-    envVars:
-      - key: PORT
-        value: 10000
+    env: python
+    buildCommand: ""
+    startCommand: python app.py
