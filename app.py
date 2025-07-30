@@ -7,22 +7,19 @@ import os
 
 app = Flask(__name__)
 
-# کلیدهای API از محیط سیستم (Render یا .env)
-API_KEY = os.getenv("COINEX_API_KEY")
-API_SECRET = os.getenv("COINEX_API_SECRET")
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
-API_URL = "https://api.coinex.com/v1"
-
 # روت ساده برای تست در مرورگر
 @app.route('/')
 def home():
     return "✅ Bot is running!"
 
-# تولید امضا برای درخواست به کوینکس
-def sign(params, secret):
-    sorted_params = sorted(params.items())
-    encoded = '&'.join(f"{k}={v}" for k, v in sorted_params)
-    return hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+# روت وبهوک برای دریافت سیگنال از تریدینگ ویو
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    print("📥 signal TradingView:", data)
+
+    if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
+        return jsonify({"code": "error", "message": "⛔️ رمز اشتباه یا داده نامعتبر!"}), 403
 
 # ارسال سفارش خرید یا فروش
 def place_order(market, type_, amount, price):
@@ -50,15 +47,6 @@ def place_order(market, type_, amount, price):
     except Exception as e:
         return {"error": str(e)}
 
-# روت وبهوک برای دریافت سیگنال از تریدینگ ویو
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-    print("📥 سیگنال دریافتی از TradingView:", data)
-
-    if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
-        return jsonify({"code": "error", "message": "⛔️ رمز اشتباه یا داده نامعتبر!"}), 403
-
     action = data.get("action")  # buy یا sell یا close
     market = data.get("market")  # مثل BTCUSDT
     amount = data.get("amount")  # مقدار
@@ -76,6 +64,19 @@ def webhook():
     result = place_order(market, action, amount, price)
     print(f"📤 سفارش {action} برای {market} به مبلغ {amount} در قیمت {price} ارسال شد")
     return jsonify(result)
+
+# کلیدهای API از محیط سیستم (Render یا .env)
+API_KEY = os.getenv("COINEX_API_KEY")
+API_SECRET = os.getenv("COINEX_API_SECRET")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
+API_URL = "https://api.coinex.com/v2"
+
+# تولید امضا برای درخواست به کوینکس
+POST /assets/spot/balance HTTP/1.1
+Host: api.coinex.com
+-H 'X-COINEX-KEY: XXXXXXXXXX' \
+-H 'X-COINEX-SIGN: XXXXXXXXXX' \
+-H 'X-COINEX-TIMESTAMP: 1700490703564
 
 # اجرای لوکال برای تست
 if __name__ == '__main__':
