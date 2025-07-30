@@ -23,9 +23,9 @@ def home():
 def webhook():
     data = request.json
     print("📥 signal TradingView:", data)
-
+     return jsonify({"status": "received"})  # ✅ این خط پاسخ معتبر می‌ده
     if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
-        return jsonify({"code": "error", "message": "⛔️ رمز اشتباه یا داده نامعتبر!"}), 403
+        return jsonify({"code": "error", "message": "⛔️ wrong data or password!"}), 403
 
 # ارسال سفارش خرید یا فروش
 def place_order(market, type_, amount, price):
