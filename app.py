@@ -21,14 +21,19 @@ def home():
 # روت وبهوک برای دریافت سیگنال از تریدینگ ویو
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
-    print("📥 signal TradingView:", data)
+    try:
+        data = request.get_json(force=True)  # تضمین می‌کنه که JSON استخراج بشه حتی اگه Header درست نباشه
+        print("📥 سیگنال دریافتی:", data)
 
-    if data and data.get("passphrase") == WEBHOOK_PASSPHRASE:
-        # اجرای منطق سفارش (در صورت نیاز)
-        return jsonify(code="success", message="✅ Signal received"), 200
+        if data and data.get("passphrase") == WEBHOOK_PASSPHRASE:
+            return jsonify(code="success", message="✅ Signal received"), 200
+        else:
+            print("⛔️ رمز اشتباه یا داده ناقص:", data)
+            return jsonify(code="error", message="⛔️ Invalid data or passphrase"), 403
+    except Exception as e:
+        print("❌ خطا در دریافت سیگنال:", str(e))
+        return jsonify(code="error", message="❌ Exception occurred"), 500
 
-    return jsonify(code="error", message="⛔️ Invalid data or passphrase"), 403
 
 
 
