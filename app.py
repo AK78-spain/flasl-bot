@@ -7,6 +7,12 @@ import os
 
 app = Flask(__name__)
 
+# کلیدهای API از محیط سیستم (Render یا .env)
+API_KEY = os.getenv("COINEX_API_KEY")
+API_SECRET = os.getenv("COINEX_API_SECRET")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
+API_URL = "https://api.coinex.com/v2"
+
 # روت ساده برای تست در مرورگر
 @app.route('/')
 def home():
@@ -64,12 +70,6 @@ def place_order(market, type_, amount, price):
     result = place_order(market, action, amount, price)
     print(f"📤 سفارش {action} برای {market} به مبلغ {amount} در قیمت {price} ارسال شد")
     return jsonify(result)
-
-# کلیدهای API از محیط سیستم (Render یا .env)
-API_KEY = os.getenv("COINEX_API_KEY")
-API_SECRET = os.getenv("COINEX_API_SECRET")
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
-API_URL = "https://api.coinex.com/v2"
 
 # تولید امضا برای درخواست به کوینکس
 POST /assets/spot/balance HTTP/1.1
