@@ -31,6 +31,7 @@ def webhook():
     return jsonify(code="error", message="⛔️ Invalid data or passphrase"), 403
 
 
+
 # ارسال سفارش خرید یا فروش
 def place_order(market, type_, amount, price):
     endpoint = "/order/limit"
