@@ -1,28 +1,36 @@
 from flask import Flask, request, jsonify
+import logging
 import os
+
+# تنظیم logging برای نمایش پیام‌ها در همه محیط‌ها (مثل Render)
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
 app = Flask(__name__)
 
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE",)  # رمز پیش‌فرض برای تست
+# دریافت از محیط یا مقدار پیش‌فرض
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
 
 @app.route('/')
 def home():
-    return "✅ Webhook Tester Running!"
+    return "✅ Webhook Server is Running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
-    print("📥 Webhook received:")
-    print(data)
+    try:
+        data = request.get_json(force=True)
+        logging.info("📥 Webhook received from TradingView:")
+        logging.info(data)
 
-    if not data:
-        return jsonify({"status": "error", "message": "⛔️ No JSON data received!"}), 400
+        if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
+            logging.warning("⛔️ Invalid data or passphrase")
+            return jsonify({"code": "error", "message": "⛔️ Invalid data or passphrase"}), 403
 
-    if data.get("passphrase") != WEBHOOK_PASSPHRASE:
-        return jsonify({"status": "error", "message": "⛔️ Invalid passphrase!"}), 403
+        return jsonify({"code": "success", "message": "✅ Webhook received"}), 200
 
-    return jsonify({"status": "success", "message": "✅ Webhook received successfully!"}), 200
+    except Exception as e:
+        logging.error(f"🚨 Error in webhook: {e}")
+        return jsonify({"code": "error", "message": "❌ Server error"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port)
