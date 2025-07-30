@@ -72,11 +72,7 @@ def place_order(market, type_, amount, price):
     return jsonify(result)
 
 # تولید امضا برای درخواست به کوینکس
-POST /assets/spot/balance HTTP/1.1
-Host: api.coinex.com
--H 'X-COINEX-KEY: XXXXXXXXXX' \
--H 'X-COINEX-SIGN: XXXXXXXXXX' \
--H 'X-COINEX-TIMESTAMP: 1700490703564
+
 
 # اجرای لوکال برای تست
 if __name__ == '__main__':
