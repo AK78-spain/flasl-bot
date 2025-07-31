@@ -1,71 +1,72 @@
 import os
+import time
 import hmac
 import hashlib
-import time
 import json
 import logging
-from flask import Flask, request, abort
+from flask import Flask, request, jsonify
 import requests
 
-# =====================[ تنظیمات اولیه ]=====================
-# تنظیم logging برای نمایش در Render
+# -------------------- تنظیمات اولیه --------------------
 logging.basicConfig(level=logging.INFO)
-app = Flask(__name__)
 
-# لود متغیرهای محیطی
 API_KEY = os.getenv("COINEX_API_KEY")
-API_SECRET = os.getenv("COINEX_API_SECRET").encode()  # برای HMAC
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
+API_SECRET = os.getenv("COINEX_API_SECRET")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "123456")
 
 BASE_URL = "https://api.coinex.com/v2/futures"
 
-# =====================[ توابع کمکی ]=====================
-def coinex_signature(params: dict) -> str:
-    """
-    ساخت امضای HMAC-SHA256 برای احراز هویت CoinEx
-    """
-    query = "&".join([f"{k}={params[k]}" for k in sorted(params)])
-    return hmac.new(API_SECRET, query.encode(), hashlib.sha256).hexdigest()
+app = Flask(__name__)
 
-
-def send_coinex_request(endpoint: str, method="POST", data=None):
+# -------------------- تابع امضا --------------------
+def sign_request(method, path, params=None):
     """
-    ارسال درخواست به API کوینکس
+    ساخت امضا طبق CoinEx API v2
     """
-    if data is None:
-        data = {}
+    if params is None:
+        params = {}
 
-    data["access_id"] = API_KEY
-    data["timestamp"] = int(time.time() * 1000)
+    # زمان یونیکس
+    timestamp = str(int(time.time() * 1000))
 
-    # امضا
-    signature = coinex_signature(data)
+    # مرتب سازی پارامترها برای امضا
+    query = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+
+    payload = f"{method.upper()}|{path}|{query}|{timestamp}"
+
+    signature = hmac.new(
+        API_SECRET.encode("utf-8"), 
+        payload.encode("utf-8"), 
+        hashlib.sha256
+    ).hexdigest()
+
     headers = {
-        "Authorization": signature,
+        "X-COINEX-KEY": API_KEY,
+        "X-COINEX-SIGN": signature,
+        "X-COINEX-TIMESTAMP": timestamp,
         "Content-Type": "application/json"
     }
 
+    return headers
+
+# -------------------- ارسال درخواست به CoinEx --------------------
+def send_coinex_request(endpoint, method="POST", data=None):
     url = f"{BASE_URL}{endpoint}"
-    logging.info(f"Sending request to: {url} | Data: {data}")
+    headers = sign_request(method, endpoint, data)
+    
+    if method.upper() == "POST":
+        resp = requests.post(url, headers=headers, data=json.dumps(data))
+    else:
+        resp = requests.get(url, headers=headers, params=data)
 
-    response = requests.request(method, url, headers=headers, data=json.dumps(data))
-    try:
-        resp_json = response.json()
-    except:
-        resp_json = {"error": response.text}
+    logging.info(f"CoinEx Response: {resp.text}")
+    return resp.json()
 
-    logging.info(f"Response: {resp_json}")
-    return resp_json
-
-
+# -------------------- ثبت سفارش فیوچرز --------------------
 def place_futures_order(signal: dict):
-    """
-    ثبت سفارش فیوچرز با TP و SL طبق سیگنال TradingView
-    """
-
     market = signal["market"]
-    side = signal["side"].lower()  # الان دقیقا buy یا sell می‌ماند
-    order_type = signal["type"].lower() 
+    side = signal["side"].lower()            # buy یا sell
+    order_type = signal["type"].lower()      # market یا limit یا ...
 
     payload = {
         "market": market,
@@ -73,14 +74,14 @@ def place_futures_order(signal: dict):
         "side": side,
         "type": order_type,
         "amount": signal["amount"],
-        "leverage": signal["leverage"],
+        "leverage": signal.get("leverage", 5),
     }
 
-  # اگر سفارش limit باشد باید قیمت داشته باشد
+    # اگر سفارش limit باشد باید قیمت داشته باشد
     if order_type == "limit" and "entry" in signal:
         payload["price"] = signal["entry"]
 
-    # حد سود و ضرر
+    # اضافه کردن حد سود و ضرر
     if "take_profit_1" in signal:
         payload["take_profit_price"] = signal["take_profit_1"]
         payload["take_profit_type"] = "latest_price"
@@ -88,25 +89,19 @@ def place_futures_order(signal: dict):
         payload["stop_loss_price"] = signal["stop_loss"]
         payload["stop_loss_type"] = "mark_price"
 
-    # ثبت سفارش
+    logging.info(f"Placing futures order: {payload}")
     return send_coinex_request("/order/put-order", method="POST", data=payload)
 
-
-# =====================[ وب‌هوک TradingView ]=====================
+# -------------------- وبهوک TradingView --------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """
-    دریافت سیگنال از TradingView و اجرای معامله
-    """
     data = request.json
-    logging.info(f"Webhook received: {data}")
 
-    # اعتبارسنجی پاس‌فریز
-    if data.get("passphrase") != WEBHOOK_PASSPHRASE:
-        logging.warning("Invalid passphrase!")
-        return jsonify({"status": "error", "msg": "Invalid passphrase"}), 403
+    if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
+        logging.warning("Invalid webhook request or passphrase.")
+        return jsonify({"code": "error", "msg": "invalid request"}), 403
 
-    # ثبت سفارش
+    logging.info(f"Received TradingView signal: {data}")
     result = place_futures_order(data)
     return jsonify(result)
 
@@ -115,7 +110,9 @@ def webhook():
 def home():
     return "✅ Bot is running!"
 
-# =====================[ اجرای سرور روی Render ]=====================
+
+# -------------------- اجرای Flask روی Render --------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    logging.info(f"Starting server on port {port}...")
+    app.run(host="0.0.0.0", port=port)
