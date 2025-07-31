@@ -130,7 +130,11 @@ def webhook():
     except Exception as e:
         logging.error(f"Error processing webhook: {str(e)}")
         return {"status": "error", "message": str(e)}, 500
-
+# روت ساده برای تست
+@app.route('/')
+def home():
+    return "✅ Bot is running!"
+    
 # === اجرای برنامه در Render ===
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
