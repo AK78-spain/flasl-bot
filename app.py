@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 
 API_KEY = os.getenv("COINEX_API_KEY")
 API_SECRET = os.getenv("COINEX_API_SECRET")
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "123456")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
 
 BASE_URL = "https://api.coinex.com/v2/futures"
 
