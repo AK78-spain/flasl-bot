@@ -2,117 +2,135 @@ import os
 import time
 import hmac
 import hashlib
-import json
 import logging
-from flask import Flask, request, jsonify
 import requests
+from flask import Flask, request, jsonify
 
-# -------------------- تنظیمات اولیه --------------------
+# ------------------ تنظیمات عمومی ------------------
 logging.basicConfig(level=logging.INFO)
-
-API_KEY = os.getenv("COINEX_API_KEY")
-API_SECRET = os.getenv("COINEX_API_SECRET")
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
-
-BASE_URL = "https://api.coinex.com/v2/futures"
 
 app = Flask(__name__)
 
-# -------------------- تابع امضا --------------------
-def sign_request(method, path, params=None):
-    """
-    ساخت امضا طبق CoinEx API v2
-    """
-    if params is None:
-        params = {}
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "12345")
+COINEX_API_KEY = os.getenv("COINEX_API_KEY", "")
+COINEX_API_SECRET = os.getenv("COINEX_API_SECRET", "")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-    # زمان یونیکس
-    timestamp = str(int(time.time() * 1000))
+BASE_URL = "https://api.coinex.com/v2"
 
-    # مرتب سازی پارامترها برای امضا
-    query = "&".join([f"{k}={v}" for k, v in sorted(params.items())])
+# برای جلوگیری از سیگنال تکراری
+last_signal = {"key": None, "timestamp": 0}
+COOLDOWN_SECONDS = 5
 
-    payload = f"{method.upper()}|{path}|{query}|{timestamp}"
+# ------------------ توابع کمکی ------------------
+def send_telegram_message(text: str):
+    """ارسال پیام به تلگرام"""
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
+def generate_signature(method, path, body, timestamp):
+    """ساخت امضای CoinEx"""
+    prepared_str = method.upper() + path
+    if body:
+        prepared_str += body
+    prepared_str += str(timestamp)
     signature = hmac.new(
-        API_SECRET.encode("utf-8"), 
-        payload.encode("utf-8"), 
-        hashlib.sha256
-    ).hexdigest()
+        COINEX_API_SECRET.encode('latin-1'),
+        msg=prepared_str.encode('latin-1'),
+        digestmod=hashlib.sha256
+    ).hexdigest().lower()
+    return signature
+
+def coinex_request(method, endpoint, data=None):
+    """ارسال درخواست به CoinEx"""
+    url = BASE_URL + endpoint
+    timestamp = int(time.time() * 1000)
+    body_str = "" if method.upper() == "GET" else ("" if not data else str(data).replace("'", '"'))
 
     headers = {
-        "X-COINEX-KEY": API_KEY,
-        "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": timestamp,
+        "X-COINEX-KEY": COINEX_API_KEY,
+        "X-COINEX-SIGN": generate_signature(method, endpoint, body_str, timestamp),
+        "X-COINEX-TIMESTAMP": str(timestamp),
         "Content-Type": "application/json"
     }
 
-    return headers
-
-# -------------------- ارسال درخواست به CoinEx --------------------
-def send_coinex_request(endpoint, method="POST", data=None):
-    url = f"{BASE_URL}{endpoint}"
-    headers = sign_request(method, endpoint, data)
-    
-    if method.upper() == "POST":
-        resp = requests.post(url, headers=headers, data=json.dumps(data))
-    else:
-        resp = requests.get(url, headers=headers, params=data)
-
+    resp = requests.request(method, url, headers=headers, json=data)
     logging.info(f"CoinEx Response: {resp.text}")
     return resp.json()
 
-# -------------------- ثبت سفارش فیوچرز --------------------
-def place_futures_order(signal: dict):
-    market = signal["market"]
-    side = signal["side"].lower()            # buy یا sell
-    order_type = signal["type"].lower()      # market یا limit یا ...
+# ------------------ روت‌ها ------------------
 
-    payload = {
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "running"})
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    logging.info(f"Received Signal: {data}")
+
+    # 1. بررسی رمز عبور
+    if data.get("passphrase") != WEBHOOK_PASSPHRASE:
+        logging.warning("Invalid passphrase received")
+        return jsonify({"status": "error", "msg": "Invalid passphrase"}), 403
+
+    # 2. جلوگیری از سیگنال تکراری
+    global last_signal
+    signal_key = f"{data.get('market')}-{data.get('side')}"
+    now = time.time()
+    if last_signal["key"] == signal_key and now - last_signal["timestamp"] < COOLDOWN_SECONDS:
+        logging.info("Duplicate signal ignored")
+        return jsonify({"status": "ignored", "msg": "Duplicate signal"})
+
+    last_signal = {"key": signal_key, "timestamp": now}
+
+    # 3. ثبت سفارش فیوچرز در CoinEx
+    market = data.get("market")
+    side = data.get("side")
+    amount = data.get("amount")
+    leverage = data.get("leverage", 1)
+
+    # تنظیم اهرم
+    coinex_request("POST", "/futures/adjust-position-leverage", {
+        "market": market,
+        "market_type": "FUTURES",
+        "margin_mode": "cross",
+        "leverage": leverage
+    })
+
+    # ثبت سفارش مارکت
+    order_resp = coinex_request("POST", "/futures/order", {
         "market": market,
         "market_type": "FUTURES",
         "side": side,
-        "type": order_type,
-        "amount": signal["amount"],
-        "leverage": signal.get("leverage", 5),
-    }
+        "type": "market",
+        "amount": amount
+    })
 
-    # اگر سفارش limit باشد باید قیمت داشته باشد
-    if order_type == "limit" and "entry" in signal:
-        payload["price"] = signal["entry"]
+    # اگر حد ضرر یا سود داده شده بود، ثبت کنیم
+    if data.get("stop_loss"):
+        coinex_request("POST", "/futures/set-position-stop-loss", {
+            "market": market,
+            "market_type": "FUTURES",
+            "stop_loss_type": "mark_price",
+            "stop_loss_price": str(data.get("stop_loss"))
+        })
 
-    # اضافه کردن حد سود و ضرر
-    if "take_profit_1" in signal:
-        payload["take_profit_price"] = signal["take_profit_1"]
-        payload["take_profit_type"] = "latest_price"
-    if "stop_loss" in signal:
-        payload["stop_loss_price"] = signal["stop_loss"]
-        payload["stop_loss_type"] = "mark_price"
+    if data.get("take_profit_1"):
+        coinex_request("POST", "/futures/set-position-take-profit", {
+            "market": market,
+            "market_type": "FUTURES",
+            "take_profit_type": "mark_price",
+            "take_profit_price": str(data.get("take_profit_1"))
+        })
 
-    logging.info(f"Placing futures order: {payload}")
-    return send_coinex_request("/order/put-order", method="POST", data=payload)
+    # 4. ارسال پیام تلگرام
+    send_telegram_message(f"🚀 Signal Executed\n{data}")
 
-# -------------------- وبهوک TradingView --------------------
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.json
+    return jsonify({"status": "success", "msg": "Order executed", "order_response": order_resp})
 
-    if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
-        logging.warning("Invalid webhook request or passphrase.")
-        return jsonify({"code": "error", "msg": "invalid request"}), 403
-
-    logging.info(f"Received TradingView signal: {data}")
-    result = place_futures_order(data)
-    return jsonify(result)
-
-# روت ساده برای تست
-@app.route('/')
-def home():
-    return "✅ Bot is running!"
-
-
-# -------------------- اجرای Flask روی Render --------------------
+# ------------------ اجرای لوکال ------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    logging.info(f"Starting server on port {port}...")
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
