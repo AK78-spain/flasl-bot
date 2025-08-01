@@ -111,6 +111,11 @@ def webhook():
         "amount": data["amount"]
     }
 
+
+logging.info(f"URL: {url}")                     #اضافه شده برای تست
+logging.info(f"METHOD: {method}")
+logging.info(f"BODY: {body}")
+
     # 1️⃣ ثبت سفارش
     order_resp = coinex_request("POST", "/v2/futures/order", order_body)
 
