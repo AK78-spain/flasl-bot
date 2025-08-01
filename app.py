@@ -11,11 +11,11 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "12345")
-COINEX_API_KEY = os.getenv("COINEX_API_KEY", "")
-COINEX_API_SECRET = os.getenv("COINEX_API_SECRET", "")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
+COINEX_API_KEY = os.getenv("COINEX_API_KEY")
+COINEX_API_SECRET = os.getenv("COINEX_API_SECRET")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_URL = "https://api.coinex.com/v2"
 
