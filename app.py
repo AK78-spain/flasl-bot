@@ -19,7 +19,7 @@ logging.basicConfig(
 # ---------------- تنظیمات امنیتی ----------------
 API_KEY = os.getenv("COINEX_API_KEY")
 API_SECRET = os.getenv("COINEX_API_SECRET")
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "123456")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
