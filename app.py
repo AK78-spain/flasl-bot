@@ -1,149 +1,110 @@
 import os
-import time
 import json
+import time
 import hmac
 import hashlib
 import logging
-import requests
 from flask import Flask, request, jsonify
+import requests
 
-# -----------------------------
-# تنظیمات Flask و Logging
-# -----------------------------
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# -----------------------------
-# محیط‌های حساس
-# -----------------------------
-WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
-COINEX_ACCESS_ID = os.getenv("COINEX_ACCESS_ID")
-COINEX_SECRET_KEY = os.getenv("COINEX_SECRET_KEY")
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# ------------- تنظیمات محیطی -------------
+COINEX_API_KEY = os.getenv("COINEX_API_KEY")
+COINEX_SECRET = os.getenv("COINEX_SECRET")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE", "12345")  # رمز پیش‌فرض
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-BASE_URL = "https://api.coinex.com"
-last_signal = {"key": None, "time": 0}
+# ذخیره آخرین سیگنال‌ها برای جلوگیری از تکرار
+last_signal = {}
+duplicate_delay = 30  # ثانیه
 
-# -----------------------------
-# توابع کمکی
-# -----------------------------
-
-def send_telegram(message: str):
+# ------------------ توابع کمکی ------------------
+def send_telegram(msg: str):
     """ارسال پیام به تلگرام"""
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        except Exception as e:
+            logging.error(f"❌ Telegram error: {e}")
 
-def coinex_request(method, path, body=None):
-    """ارسال درخواست امضاشده به CoinEx"""
-    ts = str(int(time.time() * 1000))
-    body_str = json.dumps(body) if body else ""
-    sig_str = method.upper() + path + body_str + ts
-    signature = hmac.new(COINEX_SECRET_KEY.encode(), sig_str.encode(), hashlib.sha256).hexdigest()
-    headers = {
-        "X-COINEX-KEY": COINEX_ACCESS_ID,
-        "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": ts,
-        "Content-Type": "application/json"
+def coinex_signature(payload: dict) -> dict:
+    """تولید امضای کوینکس"""
+    param_str = '&'.join([f"{k}={payload[k]}" for k in sorted(payload)])
+    signature = hmac.new(COINEX_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+    return {"X-COINEX-KEY": COINEX_API_KEY, "X-COINEX-SIGN": signature}
+
+def place_futures_order(signal: dict):
+    """ثبت سفارش فیوچرز مارکت در کوینکس"""
+    url = "https://api.coinex.com/v2/futures/order"
+    payload = {
+        "market": signal["market"],
+        "side": signal["side"],
+        "type": "market",
+        "amount": signal["amount"],
+        "leverage": signal.get("leverage", 3),
+        "timestamp": int(time.time() * 1000),
     }
-    url = BASE_URL + path
-    r = requests.request(method, url, headers=headers, json=body)
-    return r.json()
+    headers = coinex_signature(payload)
 
-def process_signal(data):
-    """پردازش سیگنال دریافتی و ارسال سفارش به CoinEx"""
-    market = data["market"]
-    side = data["side"]
-    order_type = data["type"]
-    amount = str(data["amount"])
-    leverage = data.get("leverage", 5)
-    entry = str(data.get("entry"))
-    tp1 = str(data.get("take_profit_1"))
-    sl = str(data.get("stop_loss"))
+    logging.info(f"📤 Sending order to CoinEx: {payload}")
+    resp = requests.post(url, data=payload, headers=headers)
 
-    # 1️⃣ تنظیم لوریج
-    res1 = coinex_request("POST", "/v2/futures/adjust-position-leverage", {
-        "market": market,
-        "market_type": "FUTURES",
-        "margin_mode": "cross",
-        "leverage": leverage
-    })
-    logging.info(f"Set leverage: {res1}")
+    if resp.text.strip() == "":
+        logging.error(f"❌ Empty response from CoinEx [{resp.status_code}]")
+        return None
 
-    # 2️⃣ باز کردن پوزیشن
-    res2 = coinex_request("PUT", "/v2/futures/order", {
-        "market": market,
-        "market_type": "FUTURES",
-        "side": side,
-        "type": order_type,
-        "amount": amount
-    })
-    logging.info(f"Open order: {res2}")
+    try:
+        data = resp.json()
+        logging.info(f"✅ Order response: {data}")
+        return data
+    except Exception as e:
+        logging.error(f"❌ JSON parse error: {e} | Raw: {resp.text}")
+        return None
 
-    # 3️⃣ تنظیم Stop Loss
-    if sl:
-        res3 = coinex_request("POST", "/v2/futures/set-position-stop-loss", {
-            "market": market,
-            "market_type": "FUTURES",
-            "stop_loss_type": "mark_price",
-            "stop_loss_price": sl
-        })
-        logging.info(f"Set SL: {res3}")
-
-    # 4️⃣ تنظیم Take Profit
-    if tp1:
-        res4 = coinex_request("POST", "/v2/futures/set-position-take-profit", {
-            "market": market,
-            "market_type": "FUTURES",
-            "take_profit_type": "latest_price",
-            "take_profit_price": tp1
-        })
-        logging.info(f"Set TP: {res4}")
-
-    msg = f"✅ New {side.upper()} order {market}\nEntry:{entry}\nTP:{tp1} | SL:{sl}"
-    send_telegram(msg)
-    return True
-
-# -----------------------------
-# روت‌ها
-# -----------------------------
-
+# ------------------ روت تست ------------------
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "I am alive"}), 200
+    return jsonify({"status": "running", "time": int(time.time())})
 
+# ------------------ روت وبهوک ------------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-    logging.info(f"📩 Received signal: {json.dumps(data, ensure_ascii=False)}")
-
-    # 1️⃣ بررسی Passphrase
-    if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
-        logging.warning("Invalid or missing passphrase")
-        return jsonify({"status": "error", "message": "Invalid passphrase"}), 403
-
-    # 2️⃣ جلوگیری از سفارش تکراری
-    signal_key = f"{data['market']}_{data['side']}"
-    now = time.time()
-    if last_signal["key"] == signal_key and (now - last_signal["time"]) < 30:
-        logging.info("Duplicate signal ignored")
-        return jsonify({"status": "ignored", "message": "Duplicate signal"}), 200
-
-    last_signal["key"] = signal_key
-    last_signal["time"] = now
-
-    # 3️⃣ پردازش سیگنال
     try:
-        process_signal(data)
-        return jsonify({"status": "success"}), 200
-    except Exception as e:
-        logging.error(f"Error processing signal: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        signal = request.get_json(force=True)
+        logging.info(f"📩 Received signal: {json.dumps(signal)}")
 
-# -----------------------------
-# اجرای محلی (برای تست)
-# -----------------------------
+        # 1️⃣ بررسی رمز عبور
+        if signal.get("passphrase") != WEBHOOK_PASSPHRASE:
+            logging.warning("❌ Invalid passphrase in signal")
+            return jsonify({"error": "Invalid passphrase"}), 403
+
+        # 2️⃣ جلوگیری از تکرار
+        sig_key = f"{signal.get('market')}-{signal.get('side')}"
+        now = time.time()
+        if sig_key in last_signal and now - last_signal[sig_key] < duplicate_delay:
+            logging.info("⏩ Duplicate signal ignored")
+            return jsonify({"status": "duplicate_ignored"}), 200
+
+        last_signal[sig_key] = now
+
+        # 3️⃣ ارسال به تلگرام
+        send_telegram(f"📩 New signal:\n{json.dumps(signal, indent=2)}")
+
+        # 4️⃣ ثبت سفارش در کوینکس
+        result = place_futures_order(signal)
+        if result is None:
+            return jsonify({"error": "Order failed"}), 500
+
+        return jsonify({"status": "order_sent", "result": result}), 200
+
+    except Exception as e:
+        logging.error(f"❌ Error processing signal: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ------------------ اجرای محلی ------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
