@@ -50,6 +50,7 @@ def place_futures_order(signal: dict):
     }
     headers = coinex_signature(payload)
 
+    logging.info(f"⏰ Timestamp being sent: {payload['timestamp']}")
     logging.info(f"📤 Sending order to CoinEx: {payload}")
     resp = requests.post(url, data=payload, headers=headers)
 
