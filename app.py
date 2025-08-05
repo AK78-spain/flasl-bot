@@ -117,6 +117,7 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
+    logging.info(f"📩 Received signal: {json.dumps(data, ensure_ascii=False)}")
 
     # 1️⃣ بررسی Passphrase
     if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
