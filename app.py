@@ -1,225 +1,148 @@
 import os
 import time
 import json
-import hashlib
 import hmac
+import hashlib
 import logging
 import requests
 from flask import Flask, request, jsonify
 
+# -----------------------------
+# تنظیمات Flask و Logging
+# -----------------------------
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# ---------------- تنظیمات لاگ ----------------
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
-# ---------------- تنظیمات امنیتی ----------------
-API_KEY = os.getenv("COINEX_API_KEY")
-API_SECRET = os.getenv("COINEX_API_SECRET")
+# -----------------------------
+# محیط‌های حساس
+# -----------------------------
 WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE")
+COINEX_ACCESS_ID = os.getenv("COINEX_ACCESS_ID")
+COINEX_SECRET_KEY = os.getenv("COINEX_SECRET_KEY")
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_URL = "https://api.coinex.com"
-processed_signals = {}  # جلوگیری از سیگنال تکراری
+last_signal = {"key": None, "time": 0}
 
+# -----------------------------
+# توابع کمکی
+# -----------------------------
 
-# ---------------- توابع کمکی ----------------
-def generate_signature(method, endpoint, body_dict=None):
-    """تولید امضا برای CoinEx"""
-    timestamp = str(int(time.time() * 1000))
-    body_str = json.dumps(body_dict, separators=(',', ':'), ensure_ascii=False) if body_dict else ""
-    prepared_str = method + endpoint + body_str + timestamp
-    signature = hmac.new(
-        API_SECRET.encode('latin-1'),
-        prepared_str.encode('latin-1'),
-        hashlib.sha256
-    ).hexdigest().lower()
-    return signature, timestamp
-
-
-def send_telegram_message(message):
+def send_telegram(message: str):
     """ارسال پیام به تلگرام"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logging.warning("تلگرام تنظیم نشده است")
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+
+def coinex_request(method, path, body=None):
+    """ارسال درخواست امضاشده به CoinEx"""
+    ts = str(int(time.time() * 1000))
+    body_str = json.dumps(body) if body else ""
+    sig_str = method.upper() + path + body_str + ts
+    signature = hmac.new(COINEX_SECRET_KEY.encode(), sig_str.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "X-COINEX-KEY": COINEX_ACCESS_ID,
+        "X-COINEX-SIGN": signature,
+        "X-COINEX-TIMESTAMP": ts,
+        "Content-Type": "application/json"
     }
-    try:
-        requests.post(url, json=payload, timeout=5)
-        logging.info("پیام تلگرام ارسال شد")
-    except Exception as e:
-        logging.error(f"خطا در ارسال پیام تلگرام: {str(e)}")
+    url = BASE_URL + path
+    r = requests.request(method, url, headers=headers, json=body)
+    return r.json()
 
+def process_signal(data):
+    """پردازش سیگنال دریافتی و ارسال سفارش به CoinEx"""
+    market = data["market"]
+    side = data["side"]
+    order_type = data["type"]
+    amount = str(data["amount"])
+    leverage = data.get("leverage", 5)
+    entry = str(data.get("entry"))
+    tp1 = str(data.get("take_profit_1"))
+    sl = str(data.get("stop_loss"))
 
-def adjust_leverage(market, market_type, leverage):
-    """تنظیم اهرم معاملاتی"""
-    endpoint = "/v2/futures/adjust-position-leverage"
-    url = BASE_URL + endpoint
-    body = {
+    # 1️⃣ تنظیم لوریج
+    res1 = coinex_request("POST", "/v2/futures/adjust-position-leverage", {
         "market": market,
-        "market_type": market_type,
+        "market_type": "FUTURES",
         "margin_mode": "cross",
         "leverage": leverage
-    }
-    signature, timestamp = generate_signature("POST", endpoint, body)
-    headers = {
-        "X-COINEX-KEY": API_KEY,
-        "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": timestamp,
-        "Content-Type": "application/json"
-    }
-
-    try:
-        response = requests.post(url, json=body, headers=headers, timeout=5)
-        response.raise_for_status()
-        result = response.json()
-        logging.info(f"تنظیم اهرم موفق: {market} {leverage}x")
-        return result
-    except Exception as e:
-        logging.error(f"خطا در تنظیم اهرم: {str(e)}")
-        send_telegram_message(f"❌ خطا در تنظیم اهرم: {str(e)}")
-        return None
-
-
-def place_market_order(data):
-    """ثبت سفارش بازار"""
-    endpoint = "/v2/futures/order"
-    url = BASE_URL + endpoint
-    body = {
-        "market": data['market'],
-        "market_type": data['market_type'],
-        "side": data['side'],
-        "type": "market",
-        "amount": str(data['amount']),
-        "client_id": f"tv_{int(time.time())}"
-    }
-
-    signature, timestamp = generate_signature("PUT", endpoint, body)
-    headers = {
-        "X-COINEX-KEY": API_KEY,
-        "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": timestamp,
-        "Content-Type": "application/json"
-    }
-
-    try:
-        response = requests.put(url, json=body, headers=headers, timeout=5)
-        response.raise_for_status()
-        result = response.json()
-        logging.info(f"سفارش بازار ثبت شد: {result}")
-        send_telegram_message(
-            f"<b>✅ سفارش بازار ثبت شد</b>\n"
-            f"🏷 بازار: {data['market']}\n"
-            f"📈 جهت: {data['side']}\n"
-            f"💰 مقدار: {data['amount']}"
-        )
-        return result
-    except Exception as e:
-        logging.error(f"خطا در ثبت سفارش بازار: {str(e)}")
-        send_telegram_message(f"❌ خطا در ثبت سفارش بازار: {str(e)}")
-        return None
-
-
-def set_position_stop(market, market_type, stop_type, price):
-    """تنظیم حد ضرر یا سود برای پوزیشن"""
-    endpoint = f"/v2/futures/set-position-{stop_type}"
-    url = BASE_URL + endpoint
-    body = {
-        "market": market,
-        "market_type": market_type,
-        f"{stop_type}_type": "mark_price",
-        f"{stop_type}_price": str(price)
-    }
-
-    signature, timestamp = generate_signature("POST", endpoint, body)
-    headers = {
-        "X-COINEX-KEY": API_KEY,
-        "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": timestamp,
-        "Content-Type": "application/json"
-    }
-
-    try:
-        response = requests.post(url, json=body, headers=headers, timeout=5)
-        response.raise_for_status()
-        result = response.json()
-        logging.info(f"{stop_type} تنظیم شد: {market} قیمت {price}")
-        return result
-    except Exception as e:
-        logging.error(f"خطا در تنظیم {stop_type}: {str(e)}")
-        send_telegram_message(f"❌ خطا در تنظیم {stop_type}: {str(e)}")
-        return None
-
-
-def process_tradingview_signal(data):
-    """پردازش سیگنال دریافتی از TradingView"""
-    market_key = f"{data['market']}_{data['market_type']}_{data['side']}"
-
-    # جلوگیری از سیگنال تکراری 5 ثانیه‌ای
-    now = time.time()
-    if market_key in processed_signals and now - processed_signals[market_key] < 5:
-        logging.warning(f"سیگنال تکراری برای {market_key} - نادیده گرفته شد")
-        return {"status": "error", "message": "سیگنال تکراری"}
-    processed_signals[market_key] = now
-
-    # 1. تنظیم اهرم
-    if not adjust_leverage(data['market'], data['market_type'], data['leverage']):
-        return {"status": "error", "message": "تنظیم اهرم ناموفق"}
-
-    # 2. ثبت سفارش بازار
-    if not place_market_order(data):
-        return {"status": "error", "message": "ثبت سفارش ناموفق"}
-
-    time.sleep(1)  # تاخیر کوتاه برای باز شدن پوزیشن
-
-    # 3. تنظیم حد ضرر
-    if 'stop_loss' in data:
-        set_position_stop(data['market'], data['market_type'], "stop-loss", data['stop_loss'])
-
-    # 4. تنظیم حد سود
-    if 'take_profit' in data:
-        set_position_stop(data['market'], data['market_type'], "take-profit", data['take_profit'])
-
-    return {"status": "success", "message": "سیگنال پردازش شد"}
-
-
-# ---------------- مسیرهای Flask ----------------
-@app.route('/')
-def home():
-    return jsonify({
-        "status": "running",
-        "service": "coinex-tradingview-webhook",
-        "time": time.strftime("%Y-%m-%d %H:%M:%S")
     })
+    logging.info(f"Set leverage: {res1}")
 
+    # 2️⃣ باز کردن پوزیشن
+    res2 = coinex_request("PUT", "/v2/futures/order", {
+        "market": market,
+        "market_type": "FUTURES",
+        "side": side,
+        "type": order_type,
+        "amount": amount
+    })
+    logging.info(f"Open order: {res2}")
 
-@app.route('/webhook', methods=['POST'])
+    # 3️⃣ تنظیم Stop Loss
+    if sl:
+        res3 = coinex_request("POST", "/v2/futures/set-position-stop-loss", {
+            "market": market,
+            "market_type": "FUTURES",
+            "stop_loss_type": "mark_price",
+            "stop_loss_price": sl
+        })
+        logging.info(f"Set SL: {res3}")
+
+    # 4️⃣ تنظیم Take Profit
+    if tp1:
+        res4 = coinex_request("POST", "/v2/futures/set-position-take-profit", {
+            "market": market,
+            "market_type": "FUTURES",
+            "take_profit_type": "latest_price",
+            "take_profit_price": tp1
+        })
+        logging.info(f"Set TP: {res4}")
+
+    msg = f"✅ New {side.upper()} order {market}\nEntry:{entry}\nTP:{tp1} | SL:{sl}"
+    send_telegram(msg)
+    return True
+
+# -----------------------------
+# روت‌ها
+# -----------------------------
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "I am alive"}), 200
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
+    data = request.get_json()
+
+    # 1️⃣ بررسی Passphrase
+    if not data or data.get("passphrase") != WEBHOOK_PASSPHRASE:
+        logging.warning("Invalid or missing passphrase")
+        return jsonify({"status": "error", "message": "Invalid passphrase"}), 403
+
+    # 2️⃣ جلوگیری از سفارش تکراری
+    signal_key = f"{data['market']}_{data['side']}"
+    now = time.time()
+    if last_signal["key"] == signal_key and (now - last_signal["time"]) < 30:
+        logging.info("Duplicate signal ignored")
+        return jsonify({"status": "ignored", "message": "Duplicate signal"}), 200
+
+    last_signal["key"] = signal_key
+    last_signal["time"] = now
+
+    # 3️⃣ پردازش سیگنال
     try:
-        data = request.get_json(force=True)
-        logging.info(f"دریافت سیگنال: {data}")
-
-        if data.get('passphrase') != WEBHOOK_PASSPHRASE:
-            logging.warning("پس‌فراز نادرست")
-            return jsonify({"status": "error", "message": "مجوز نامعتبر"}), 401
-
-        result = process_tradingview_signal(data)
-        return jsonify(result)
-
+        process_signal(data)
+        return jsonify({"status": "success"}), 200
     except Exception as e:
-        logging.error(f"خطا در پردازش وب‌هوک: {str(e)}")
-        send_telegram_message(f"🔥 خطای بحرانی در وب‌هوک: {str(e)}")
+        logging.error(f"Error processing signal: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
-# ------------------ اجرای برنامه ------------------
+# -----------------------------
+# اجرای محلی (برای تست)
+# -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
