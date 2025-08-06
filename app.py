@@ -72,6 +72,8 @@ def place_futures_order(signal: dict):
         "X-COINEX-WINDOWTIME": "10000"
     }
 
+    logging.info(f"Sign string: {sign_str}")
+    logging.info(f"Signature: {signature}")
     logging.info(f"📤 Sending order to CoinEx: {payload}")
     resp = requests.post(url, headers=headers, data=body_str)
 
