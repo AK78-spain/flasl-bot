@@ -41,7 +41,7 @@ def coinex_signature(payload: dict) -> dict:
         "X-COINEX-KEY": COINEX_API_KEY,
         "X-COINEX-SIGN": signature,
         "X-COINEX-TIMESTAMP": str(timestamp),
-        "X-COINEX-WINDOWTIME": "10000"  # 10 ثانیه اعتبار
+        "X-COINEX-WINDOWTIME": "30000"  # 10 ثانیه اعتبار
     }
     return headers
 
