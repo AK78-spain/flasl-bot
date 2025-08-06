@@ -49,7 +49,6 @@ def place_futures_order(signal: dict):
         "side": signal["side"],
         "type": "market",
         "amount": signal["amount"],
-        "leverage": signal.get("leverage", 3),
     }
 
     body_str = json.dumps(payload, separators=(',', ':'))
