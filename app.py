@@ -35,19 +35,14 @@ def coinex_signature(payload: dict) -> dict:
     """تولید امضای کوینکس"""
     param_str = '&'.join([f"{k}={payload[k]}" for k in sorted(payload)])
     signature = hmac.new(COINEX_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
-    
-    timestamp = int(time.time() * 1000)  # زمان دقیق به میلی‌ثانیه
-    headers = {
-        "X-COINEX-KEY": COINEX_API_KEY,
-        "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": str(timestamp),
-        "X-COINEX-WINDOWTIME": "30000"  # 10 ثانیه اعتبار
-    }
-    return headers
+    return {"X-COINEX-KEY": COINEX_API_KEY, "X-COINEX-SIGN": signature}
 
 def place_futures_order(signal: dict):
-    """ثبت سفارش فیوچرز مارکت در کوینکس"""
-    url = "https://api.coinex.com/v2/futures/order"
+    """ثبت سفارش فیوچرز مارکت در کوینکس با امضای صحیح API v2"""
+    url_path = "/v2/futures/order"
+    base_url = "https://api.coinex.com"
+    url = base_url + url_path
+
     payload = {
         "market": signal["market"],
         "side": signal["side"],
@@ -56,10 +51,29 @@ def place_futures_order(signal: dict):
         "leverage": signal.get("leverage", 3),
         "timestamp": int(time.time() * 1000),
     }
-    headers = coinex_signature(payload)
+
+    # ساخت رشته امضا به شکل: METHOD + PATH + JSON_BODY
+    method = "POST"
+    body_str = json.dumps(payload, separators=(',', ':'))  # json بدون فاصله
+
+    sign_str = method + url_path + body_str
+
+    signature = hmac.new(
+        COINEX_SECRET.encode(),
+        sign_str.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-COINEX-KEY": COINEX_API_KEY,
+        "X-COINEX-SIGN": signature,
+        "X-COINEX-TIMESTAMP": str(payload["timestamp"]),
+        "X-COINEX-WINDOWTIME": "10000"
+    }
 
     logging.info(f"📤 Sending order to CoinEx: {payload}")
-    resp = requests.post(url, data=payload, headers=headers)
+    resp = requests.post(url, headers=headers, data=body_str)
 
     if resp.text.strip() == "":
         logging.error(f"❌ Empty response from CoinEx [{resp.status_code}]")
