@@ -35,7 +35,15 @@ def coinex_signature(payload: dict) -> dict:
     """تولید امضای کوینکس"""
     param_str = '&'.join([f"{k}={payload[k]}" for k in sorted(payload)])
     signature = hmac.new(COINEX_SECRET.encode(), param_str.encode(), hashlib.sha256).hexdigest()
-    return {"X-COINEX-KEY": COINEX_API_KEY, "X-COINEX-SIGN": signature}
+    
+    timestamp = int(time.time() * 1000)  # زمان دقیق به میلی‌ثانیه
+    headers = {
+        "X-COINEX-KEY": COINEX_API_KEY,
+        "X-COINEX-SIGN": signature,
+        "X-COINEX-TIMESTAMP": str(timestamp),
+        "X-COINEX-WINDOWTIME": "10000"  # 10 ثانیه اعتبار
+    }
+    return headers
 
 def place_futures_order(signal: dict):
     """ثبت سفارش فیوچرز مارکت در کوینکس"""
@@ -50,7 +58,6 @@ def place_futures_order(signal: dict):
     }
     headers = coinex_signature(payload)
 
-    logging.info(f"⏰ Timestamp being sent: {payload['timestamp']}")
     logging.info(f"📤 Sending order to CoinEx: {payload}")
     resp = requests.post(url, data=payload, headers=headers)
 
