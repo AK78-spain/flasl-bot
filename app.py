@@ -45,6 +45,7 @@ def place_futures_order(signal: dict):
     # payload بدون timestamp
     payload = {
         "market": signal["market"],
+        "market_type": "FUTURES",
         "side": signal["side"],
         "type": "market",
         "amount": signal["amount"],
