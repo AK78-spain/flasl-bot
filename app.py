@@ -38,44 +38,42 @@ def coinex_signature(payload: dict) -> dict:
     return {"X-COINEX-KEY": COINEX_API_KEY, "X-COINEX-SIGN": signature}
 
 def place_futures_order(signal: dict):
-    """ثبت سفارش فیوچرز مارکت در کوینکس با امضای صحیح API v2"""
-    url_path = "/v2/futures/order"
-    base_url = "https://api.coinex.com"
-    url = base_url + url_path
+    url = "https://api.coinex.com/v2/futures/order"
+    method = "POST"
+    timestamp = int(time.time() * 1000)
 
+    # payload بدون timestamp
     payload = {
         "market": signal["market"],
         "side": signal["side"],
         "type": "market",
         "amount": signal["amount"],
         "leverage": signal.get("leverage", 3),
-        "timestamp": int(time.time() * 1000),
     }
 
-    # ساخت رشته امضا به شکل: METHOD + PATH + JSON_BODY
-    method = "POST"
-    body_str = json.dumps(payload, separators=(',', ':'))  # json بدون فاصله
+    body_str = json.dumps(payload, separators=(',', ':'))
 
-    sign_str = method + url_path + body_str
+    request_path = "/v2/futures/order"
+    sign_str = method + request_path + body_str + str(timestamp)
 
     signature = hmac.new(
-        COINEX_SECRET.encode(),
-        sign_str.encode(),
+        COINEX_SECRET.encode('latin-1'),
+        sign_str.encode('latin-1'),
         hashlib.sha256
     ).hexdigest()
 
     headers = {
-        "Content-Type": "application/json",
         "X-COINEX-KEY": COINEX_API_KEY,
         "X-COINEX-SIGN": signature,
-        "X-COINEX-TIMESTAMP": str(payload["timestamp"]),
-        "X-COINEX-WINDOWTIME": "10000"
+        "X-COINEX-TIMESTAMP": str(timestamp),
+        "Content-Type": "application/json"
     }
 
     logging.info(f"Sign string: {sign_str}")
     logging.info(f"Signature: {signature}")
     logging.info(f"📤 Sending order to CoinEx: {payload}")
-    resp = requests.post(url, headers=headers, data=body_str)
+
+    resp = requests.post(url, data=body_str, headers=headers)
 
     if resp.text.strip() == "":
         logging.error(f"❌ Empty response from CoinEx [{resp.status_code}]")
@@ -88,6 +86,7 @@ def place_futures_order(signal: dict):
     except Exception as e:
         logging.error(f"❌ JSON parse error: {e} | Raw: {resp.text}")
         return None
+
 
 # ------------------ روت تست ------------------
 @app.route("/", methods=["GET"])
