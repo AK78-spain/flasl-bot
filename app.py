@@ -79,6 +79,7 @@ def place_futures_order(signal: dict):
         "side": signal["side"],
         "type": signal.get("type", "market"),
         "amount": signal["amount"],
+        "stp_mode": signal["stp_mode"],
     }
     if payload["type"] == "limit" and "price" in signal:
         payload["price"] = signal["price"]
