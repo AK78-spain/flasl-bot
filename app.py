@@ -12,11 +12,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 # ------------- تنظیمات محیطی -------------
 COINEX_API_KEY = os.getenv("COINEX_API_KEY")
-COINEX_SECRET = os.getenv("COINEX_SECRET")
+COINEX_SECRET = os.getenv("COINEX_API_SECRET")
 WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE") 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ENABLE_TELEGRAM = os.getenv("ENABLE_TELEGRAM", "true").lower() == "true"  # پیش‌فرض فعال
 
 # ذخیره آخرین سیگنال‌ها برای جلوگیری از تکرار
 last_signal = {}
@@ -25,22 +24,13 @@ duplicate_delay = 30  # ثانیه
 # ------------------ توابع کمکی ------------------
 def send_telegram(msg: str):
     """ارسال پیام به تلگرام"""
-    if not ENABLE_TELEGRAM:
-        logging.info("📴 ارسال به تلگرام غیرفعال است")
-        return False
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            response = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
-            response.raise_for_status()
+            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
             logging.info("📨 پیام به تلگرام ارسال شد")
-            return True
-        except requests.RequestException as e:
-            logging.error(f"❌ خطا در ارسال به تلگرام: {e}")
-            return False
-    else:
-        logging.error("❌ توکن یا چت آیدی تلگرام تنظیم نشده است")
-        return False
+        except Exception as e:
+            logging.error(f"❌ Telegram error: {e}")
 
 def close_position(market: str):
     """بستن پوزیشن باز در کوینکس"""
@@ -72,31 +62,20 @@ def close_position(market: str):
     }
 
     logging.info(f"📤 بستن پوزیشن برای {market}")
-    try:
-        resp = requests.post(url, data=body_str, headers=headers, timeout=5)
-        resp.raise_for_status()
-        logging.info(f"Close response: {resp.text}")
-        return resp.json() if resp.text else None
-    except requests.RequestException as e:
-        logging.error(f"❌ خطا در بستن پوزیشن: {e}")
-        return None
+    resp = requests.post(url, data=body_str, headers=headers)
+    logging.info(f"Close response: {resp.text}")
+    return resp.json() if resp.text else None
 
-def cancel_opposite_orders(signal: dict):
-    """کنسل کردن سفارش‌های باز در جهت مخالف"""
-    side = signal.get("side")
-    if side not in ["buy", "sell"]:
-        logging.error(f"❌ جهت سیگنال نامعتبر است: {side}")
-        return False
-
-    opposite_side = "sell" if side == "buy" else "buy"
+def cancel_all_orders(market: str, side: str):
+    """لغو همه سفارش‌های باز در جهت مشخص"""
     url = "https://api.coinex.com/v2/futures/cancel-all-order"
     method = "POST"
     timestamp = int(time.time() * 1000)
 
     payload = {
-        "market": signal["market"],
+        "market": market,
         "market_type": "FUTURES",
-        "side": opposite_side
+        "side": side
     }
 
     body_str = json.dumps(payload, separators=(',', ':'))
@@ -116,15 +95,10 @@ def cancel_opposite_orders(signal: dict):
         "Content-Type": "application/json"
     }
 
-    logging.info(f"📴 کنسل کردن سفارش‌های {opposite_side} برای {signal['market']}")
-    try:
-        resp = requests.post(url, data=body_str, headers=headers, timeout=5)
-        resp.raise_for_status()
-        logging.info(f"Cancel response: {resp.text}")
-        return resp.json() if resp.text else None
-    except requests.RequestException as e:
-        logging.error(f"❌ خطا در کنسل کردن سفارش‌ها: {e}")
-        return False
+    logging.info(f"📤 لغو همه سفارش‌های {side} برای {market}")
+    resp = requests.post(url, data=body_str, headers=headers)
+    logging.info(f"Cancel response: {resp.text}")
+    return resp.json() if resp.text else None
 
 def place_futures_order(signal: dict):
     """ایجاد سفارش جدید"""
@@ -161,19 +135,17 @@ def place_futures_order(signal: dict):
     }
 
     logging.info(f"📤 ارسال سفارش به کوینکس: {payload}")
+    resp = requests.post(url, data=body_str, headers=headers)
+
+    if resp.text.strip() == "":
+        logging.error(f"❌ پاسخ خالی از CoinEx [{resp.status_code}]")
+        return None
+
     try:
-        resp = requests.post(url, data=body_str, headers=headers, timeout=5)
-        resp.raise_for_status()
-        if resp.text.strip() == "":
-            logging.error(f"❌ پاسخ خالی از CoinEx [{resp.status_code}]")
-            return None
         data = resp.json()
         logging.info(f"✅ پاسخ سفارش: {data}")
         return data
-    except requests.RequestException as e:
-        logging.error(f"❌ خطای درخواست: {e}")
-        return None
-    except ValueError as e:
+    except Exception as e:
         logging.error(f"❌ خطای JSON: {e} | Raw: {resp.text}")
         return None
 
@@ -209,16 +181,14 @@ def webhook():
         # 4️⃣ بستن پوزیشن قبلی
         close_position(signal["market"])
 
-        # 5️⃣ کنسل کردن سفارش‌های در جهت مخالف
-        cancel_result = cancel_opposite_orders(signal)
-        if cancel_result is False:
-            logging.error("❌ کنسل کردن سفارش‌های مخالف ناموفق بود")
-            return jsonify({"error": "Failed to cancel opposite orders"}), 500
+        # 4.5️⃣ لغو همه سفارش‌های مخالف
+        opposite_side = "sell" if signal["side"] == "buy" else "buy"
+        cancel_all_orders(signal["market"], opposite_side)
 
-        # 6️⃣ توقف ۱ ثانیه‌ای
+        # 🕐 یک ثانیه بعد از عملیات بالا، سفارش جدید ثبت می‌شود
         time.sleep(1)
 
-        # 7️⃣ ثبت سفارش در کوینکس
+        # 5️⃣ ثبت سفارش در کوینکس
         result = place_futures_order(signal)
         if result is None:
             return jsonify({"error": "Order failed"}), 500
