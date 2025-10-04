@@ -4,97 +4,163 @@ import time
 import hmac
 import hashlib
 import logging
-import requests
 from flask import Flask, request, jsonify
+import requests
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# تنظیمات API
-API_KEY = "YOUR_API_KEY"
-API_SECRET = "YOUR_API_SECRET"
-BASE_URL = "https://api.coinex.com/v1"
+# ------------- تنظیمات محیطی -------------
+COINEX_API_KEY = os.getenv("COINEX_API_KEY")
+COINEX_SECRET = os.getenv("COINEX_API_SECRET")
+WEBHOOK_PASSPHRASE = os.getenv("WEBHOOK_PASSPHRASE") 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# تنظیمات تلگرام
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+# ذخیره آخرین سیگنال‌ها برای جلوگیری از تکرار
+last_signal = {}
+duplicate_delay = 30  # ثانیه
 
-logging.basicConfig(level=logging.INFO)
-
-def send_telegram_message(message: str):
+# ------------------ توابع کمکی ------------------
+def send_telegram(msg: str):
     """ارسال پیام به تلگرام"""
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+            logging.info("📨 پیام به تلگرام ارسال شد")
+        except Exception as e:
+            logging.error(f"❌ Telegram error: {e}")
+
+def close_position(market: str):
+    """بستن پوزیشن باز در کوینکس"""
+    url = "https://api.coinex.com/v2/futures/close-position"
+    method = "POST"
+    timestamp = int(time.time() * 1000)
+
+    payload = {
+        "market": market,
+        "market_type": "FUTURES",
+        "type": "market"
+    }
+
+    body_str = json.dumps(payload, separators=(',', ':'))
+    request_path = "/v2/futures/close-position"
+    sign_str = method + request_path + body_str + str(timestamp)
+
+    signature = hmac.new(
+        COINEX_SECRET.encode('latin-1'),
+        sign_str.encode('latin-1'),
+        hashlib.sha256
+    ).hexdigest()
+
+    headers = {
+        "X-COINEX-KEY": COINEX_API_KEY,
+        "X-COINEX-SIGN": signature,
+        "X-COINEX-TIMESTAMP": str(timestamp),
+        "Content-Type": "application/json"
+    }
+
+    logging.info(f"📤 بستن پوزیشن برای {market}")
+    resp = requests.post(url, data=body_str, headers=headers)
+    logging.info(f"Close response: {resp.text}")
+    return resp.json() if resp.text else None
+
+def place_futures_order(signal: dict):
+    """ایجاد سفارش جدید"""
+    url = "https://api.coinex.com/v2/futures/order"
+    method = "POST"
+    timestamp = int(time.time() * 1000)
+
+    # استفاده از type و price طبق سیگنال
+    payload = {
+        "market": signal["market"],
+        "market_type": "FUTURES",
+        "side": signal["side"],
+        "type": signal.get("type", "market"),
+        "amount": signal["amount"],
+    }
+    if payload["type"] == "limit" and "price" in signal:
+        payload["price"] = signal["price"]
+
+    body_str = json.dumps(payload, separators=(',', ':'))
+    request_path = "/v2/futures/order"
+    sign_str = method + request_path + body_str + str(timestamp)
+
+    signature = hmac.new(
+        COINEX_SECRET.encode('latin-1'),
+        sign_str.encode('latin-1'),
+        hashlib.sha256
+    ).hexdigest()
+
+    headers = {
+        "X-COINEX-KEY": COINEX_API_KEY,
+        "X-COINEX-SIGN": signature,
+        "X-COINEX-TIMESTAMP": str(timestamp),
+        "Content-Type": "application/json"
+    }
+
+    logging.info(f"📤 ارسال سفارش به کوینکس: {payload}")
+    resp = requests.post(url, data=body_str, headers=headers)
+
+    if resp.text.strip() == "":
+        logging.error(f"❌ پاسخ خالی از CoinEx [{resp.status_code}]")
+        return None
+
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        requests.post(url, data=payload)
+        data = resp.json()
+        logging.info(f"✅ پاسخ سفارش: {data}")
+        return data
     except Exception as e:
-        logging.error(f"Telegram error: {e}")
+        logging.error(f"❌ خطای JSON: {e} | Raw: {resp.text}")
+        return None
 
-def sign_request(params, secret):
-    """امضای درخواست برای کوینکس"""
-    sorted_params = sorted(params.items())
-    query = "&".join([f"{k}={v}" for k, v in sorted_params])
-    to_sign = query + f"&secret_key={secret}"
-    return hashlib.md5(to_sign.encode("utf-8")).hexdigest().upper()
+# ------------------ روت تست ------------------
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "running", "time": int(time.time())})
 
-def send_request(endpoint, params):
-    """ارسال درخواست به کوینکس"""
-    params["access_id"] = API_KEY
-    params["tonce"] = int(time.time() * 1000)
-    signature = sign_request(params, API_SECRET)
-    headers = {"Authorization": signature, "Content-Type": "application/json"}
-    url = f"{BASE_URL}{endpoint}"
-    response = requests.post(url, headers=headers, data=json.dumps(params))
-    return response.json()
-
-@app.route('/webhook', methods=['POST'])
+# ------------------ روت وبهوک ------------------
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-
     try:
-        logging.info(f"Received signal: {data}")
+        signal = request.get_json(force=True)
+        logging.info(f"📩 سیگنال دریافت شد: {json.dumps(signal)}")
 
-        market = data.get("market")
-        market_type = data.get("market_type", "FUTURES")
-        side = data.get("side")  # buy یا sell
-        order_type = data.get("type", "market")  # market یا limit
-        price = data.get("price", None)
-        amount = data.get("amount")
+        # 1️⃣ بررسی رمز عبور
+        if signal.get("passphrase") != WEBHOOK_PASSPHRASE:
+            logging.warning("❌ رمز عبور سیگنال اشتباه است")
+            return jsonify({"error": "Invalid passphrase"}), 403
 
-        # --- مرحله اول: بستن پوزیشن قبلی ---
-        close_params = {
-            "market": market,
-            "market_type": market_type,
-            "type": "market"  # همیشه مارکت برای بستن
-        }
-        close_resp = send_request("/futures/close-position", close_params)
-        logging.info(f"Close position response: {close_resp}")
-        send_telegram_message(f"⛔️ Closing old position {market} -> {close_resp}")
+        # 2️⃣ جلوگیری از تکرار
+        sig_key = f"{signal.get('market')}-{signal.get('side')}"
+        now = time.time()
+        if sig_key in last_signal and now - last_signal[sig_key] < duplicate_delay:
+            logging.info("⏩ سیگنال تکراری نادیده گرفته شد")
+            return jsonify({"status": "duplicate_ignored"}), 200
 
-        # --- فاصله 1 ثانیه ---
-        time.sleep(1)
+        last_signal[sig_key] = now
 
-        # --- مرحله دوم: ایجاد سفارش جدید ---
-        order_params = {
-            "market": market,
-            "market_type": market_type,
-            "side": side,
-            "type": order_type,
-            "amount": amount
-        }
+        # 3️⃣ ارسال پیام به تلگرام
+        send_telegram(f"📩 New signal:\n{json.dumps(signal, indent=2)}")
 
-        if order_type == "limit" and price is not None:
-            order_params["price"] = price
+        # 4️⃣ بستن پوزیشن قبلی
+        close_position(signal["market"])
+        time.sleep(1)  # فاصله ۱ ثانیه‌ای
 
-        order_resp = send_request("/futures/order", order_params)
-        logging.info(f"New order response: {order_resp}")
-        send_telegram_message(f"✅ New order placed: {market} {side} {amount} {order_type} {price if price else ''}")
+        # 5️⃣ ثبت سفارش در کوینکس
+        result = place_futures_order(signal)
+        if result is None:
+            return jsonify({"error": "Order failed"}), 500
 
-        return jsonify({"status": "success", "order_response": order_resp})
+        logging.info("✅ عملیات ثبت سفارش کامل شد")
+        return jsonify({"status": "order_sent", "result": result}), 200
 
     except Exception as e:
-        logging.error(f"Error: {str(e)}")
-        send_telegram_message(f"⚠️ Error: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 400
+        logging.error(f"❌ خطا در پردازش سیگنال: {e}")
+        return jsonify({"error": str(e)}), 500
 
+# ------------------ اجرای محلی ------------------
 if __name__ == "__main__":
-    app.run(port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
