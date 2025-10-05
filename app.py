@@ -14,8 +14,8 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # دریافت اطلاعات حساس از متغیرهای محیطی (در Render تنظیم می‌کنی)
-API_KEY = os.environ.get("COINEX_API_KEY")
-API_SECRET = os.environ.get("COINEX_API_SECRET").encode()
+API_KEY = os.environ.get("toobit_API_KEY")
+API_SECRET = os.environ.get("toobit_API_SECRET").encode()
 SIGNAL_PASSWORD = os.environ.get("SIGNAL_PASS")  # رمز اختصاصی برای سیگنال‌ها
 
 BASE_URL = "https://api.coinex.com/v2/futures/order/put_limit"
