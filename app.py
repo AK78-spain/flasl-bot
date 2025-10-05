@@ -111,7 +111,7 @@ def webhook():
         # دریافت JSON از TradingView
         data = request.get_json()
 
-        if not 
+        if not data:
             print("هیچ داده‌ای در webhook دریافت نشد.")
             return jsonify({"error": "No data received"}), 400
 
