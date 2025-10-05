@@ -1,4 +1,4 @@
-# bot.py
+# app.py
 
 from flask import Flask, request, jsonify
 import hashlib
@@ -32,12 +32,12 @@ def sign_request(method, url_path, body_str, timestamp, secret_key):
     # توجه: طبق مستندات، برای امضای درخواست‌های REST، از 'X-BM-TIMESTAMP#MEMO#BODY' استفاده می‌شه
     str_to_sign = f"{timestamp}#{BITMART_MEMO}#{body_str}"
     signature = hmac.new(
-        key=bytes(secret_key, "utf-8"),
-        msg=bytes(str_to_sign, "utf-8"),
+        key=bytes(secret_key, "utf-8"), # secret_key به بایت تبدیل می‌شه
+        msg=bytes(str_to_sign, "utf-8"), # str_to_sign به بایت تبدیل می‌شه
         digestmod=hashlib.sha256
-    ).digest()
-    signature_b64 = str(signature, 'utf-8')
-    return signature_b64
+    ).digest() # خروجی digest() یه ترتیب بایتی (bytes) هست
+    signature_hex = signature.hex() # تبدیل به رشته Hexadecimal
+    return signature_hex
 
 def submit_order(symbol, side_int, price, size, leverage, order_type='limit', mode=1):
     """
@@ -76,7 +76,7 @@ def submit_order(symbol, side_int, price, size, leverage, order_type='limit', mo
     # Headers درخواست
     headers = {
         'X-BM-KEY': API_KEY,
-        'X-BM-SIGN': signature,
+        'X-BM-SIGN': signature, # این signature همین signature_hex هست که تابع sign_request برمی‌گردونه
         'X-BM-TIMESTAMP': str(timestamp),
         'X-BM-PERMS': BITMART_MEMO, # استفاده از BITMART_MEMO برای X-BM-PERMS
         'Content-Type': 'application/json'
@@ -111,7 +111,7 @@ def webhook():
         # دریافت JSON از TradingView
         data = request.get_json()
 
-        if not data:
+        if not 
             print("هیچ داده‌ای در webhook دریافت نشد.")
             return jsonify({"error": "No data received"}), 400
 
