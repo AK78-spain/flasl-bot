@@ -7,89 +7,85 @@ import logging
 import requests
 from flask import Flask, request, jsonify
 
+# -----------------------------
+# تنظیمات اولیه
+# -----------------------------
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# تنظیمات لاگ
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# دریافت اطلاعات حساس از متغیرهای محیطی (در Render تنظیم می‌کنی)
+API_KEY = os.environ.get("COINEX_API_KEY")
+API_SECRET = os.environ.get("COINEX_API_SECRET").encode()
+SIGNAL_PASSWORD = os.environ.get("SIGNAL_PASS")  # رمز اختصاصی برای سیگنال‌ها
 
-# 🔑 اطلاعات API توبیت (از داشبورد توبیت خودت بگیر)
-API_KEY = "YOUR_API_KEY"
-API_SECRET = "YOUR_SECRET_KEY"
+BASE_URL = "https://api.coinex.com/v2/futures/order/put_limit"
 
-BASE_URL = "https://api.toobit.com"
+# -----------------------------
+# توابع کمکی
+# -----------------------------
 
-# 🧩 تابع ساخت امضا HMAC SHA256
-def generate_signature(params: dict, secret_key: str):
-    query_string = "&".join([f"{key}={params[key]}" for key in params])
-    signature = hmac.new(secret_key.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+def sign_request(params):
+    """ایجاد امضا برای درخواست‌های CoinEx"""
+    sorted_params = sorted(params.items())
+    query = '&'.join([f"{k}={v}" for k, v in sorted_params])
+    signature = hmac.new(API_SECRET, query.encode(), hashlib.sha256).hexdigest()
     return signature
 
-# 📤 تابع ارسال سفارش
-def place_order(symbol, side, type_, quantity, price):
+def send_order(symbol, side, order_type, quantity, price):
+    """ارسال سفارش به CoinEx"""
     timestamp = int(time.time() * 1000)
+    client_id = f"pl{timestamp}"
 
-    # تبدیل symbol به فرمت توبیت
-    if not symbol.endswith("-SWAP-USDT"):
-        symbol = f"{symbol.replace('USDT', '')}-SWAP-USDT"
-
-    # تبدیل side به فرمت درست
-    side_map = {
-        "BUY": "BUY_OPEN",
-        "SELL": "SELL_OPEN"
-    }
-    side = side_map.get(side.upper(), side)
-
-    new_client_id = f"order_{int(time.time() * 1000)}"
-
-    data = {
+    params = {
         "symbol": symbol,
         "side": side,
-        "type": type_,
+        "type": order_type,
         "quantity": quantity,
         "price": price,
-        "newClientOrderId": new_client_id,
-        "timestamp": timestamp
+        "newClientOrderId": client_id,
+        "timestamp": timestamp,
     }
 
-    signature = generate_signature(data, API_SECRET)
-    data["signature"] = signature
-
+    signature = sign_request(params)
     headers = {
+        "X-COINEX-KEY": API_KEY,
         "Content-Type": "application/json",
-        "X-BB-APIKEY": API_KEY
     }
 
-    url = f"{BASE_URL}/api/v1/futures/order"
+    payload = {**params, "signature": signature}
 
-    logging.info(f"Sending order: {json.dumps(data, indent=2)}")
+    logging.info(f"📤 ارسال سفارش: {payload}")
 
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        logging.info(f"Response: {response.status_code} - {response.text}")
-        return response.json()
-    except Exception as e:
-        logging.error(f"Error placing order: {e}")
-        return {"error": str(e)}
+    response = requests.post(BASE_URL, headers=headers, json=payload)
+    logging.info(f"📥 پاسخ CoinEx: {response.text}")
 
-# 🪄 مسیر وبهوک برای دریافت سیگنال از تریدینگ‌ویو
-@app.route("/webhook", methods=["POST"])
+    return response.json()
+
+# -----------------------------
+# مسیر وبهوک
+# -----------------------------
+@app.route('/webhook', methods=['POST'])
 def webhook():
+    data = request.get_json()
+
+    # بررسی رمز امنیتی
+    password = data.get("password")
+    if password != SIGNAL_PASSWORD:
+        logging.warning("❌ رمز سیگنال نادرست است!")
+        return jsonify({"error": "Invalid signal password"}), 403
+
     try:
-        data = request.get_json()
-        logging.info(f"Received signal: {data}")
+        symbol = data["symbol"]
+        side = data["side"]
+        order_type = data["type"]
+        quantity = data["quantity"]
+        price = data["price"]
 
-        symbol = data.get("symbol")
-        side = data.get("side")
-        type_ = data.get("type", "LIMIT")
-        quantity = data.get("quantity")
-        price = data.get("price")
-
-        result = place_order(symbol, side, type_, quantity, price)
+        result = send_order(symbol, side, order_type, quantity, price)
         return jsonify(result)
-
     except Exception as e:
-        logging.error(f"Webhook error: {e}")
-        return jsonify({"error": str(e)}), 400
+        logging.error(f"❌ خطا در پردازش سیگنال: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ------------------ روت تست ------------------
 @app.route("/", methods=["GET"])
