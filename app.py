@@ -7,28 +7,37 @@ import json
 import logging
 from flask import Flask, request, jsonify
 import requests
-import threading  # برای اجرای پینگ خودکار در بک‌گراند
+import threading
 
-# تنظیم لاگ‌ها
+# basic logging
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("bitmart-webhook-bot")
 
-# تنظیمات محیطی
+# ENV / config
 BITMART_API_KEY = os.getenv("BITMART_API_KEY")
 BITMART_API_SECRET = os.getenv("BITMART_API_SECRET")
 BITMART_API_MEMO = os.getenv("BITMART_API_MEMO", "")
 TRADINGVIEW_PASSPHRASE = os.getenv("TRADINGVIEW_PASSPHRASE", "S@leh110")
 DEFAULT_LEVERAGE = os.getenv("DEFAULT_LEVERAGE", "1")
 
-API_BASE = "https://api-cloud-v2.bitmart.com"
+# Telegram config (required to send messages)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ex: 123456:ABC-DEF...
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")      # ex: -1001234567890 (channel/group) or 987654321 (user)
 
-# بررسی کلیدها
+API_BASE = "https://api-cloud-v2.bitmart.com"
+SELF_PING_URL = os.getenv("SELF_PING_URL", "https://flasl-bot.onrender.com/ping")
+PING_INTERVAL_SECONDS = int(os.getenv("PING_INTERVAL_SECONDS", 240))
+
+# check keys
 if not BITMART_API_KEY or not BITMART_API_SECRET:
     logger.error("BITMART_API_KEY and BITMART_API_SECRET must be set in environment variables.")
 
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set. Telegram notifications will be disabled.")
+
 app = Flask(__name__)
 
-# نگاشت سیگنال‌ها
+# map signals
 SIDE_MAP = {
     "buy": 1,
     "long": 1,
@@ -38,7 +47,6 @@ SIDE_MAP = {
 
 
 def make_signature(timestamp_ms: int, memo: str, body_json_str: str, secret: str) -> str:
-    """تولید امضای HMAC برای BitMart"""
     payload = f"{timestamp_ms}#{memo}#{body_json_str}"
     h = hmac.new(secret.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256)
     return h.hexdigest()
@@ -60,16 +68,61 @@ def submit_futures_order(order_payload: dict):
     }
 
     logger.info("Sending order to BitMart: %s", body_json_str)
-    resp = requests.post(url, headers=headers, data=body_json_str, timeout=15)
+    try:
+        resp = requests.post(url, headers=headers, data=body_json_str, timeout=15)
+    except Exception as e:
+        logger.exception("Error while sending order to BitMart")
+        return False, {"error": str(e)}, None
+
     try:
         return (resp.status_code == 200 and resp.headers.get("Content-Type", "").startswith("application/json"), resp.json(), resp.status_code)
     except Exception:
         return (False, resp.text, resp.status_code)
 
 
+# ---------------- Telegram helper ----------------
+def _send_telegram_request(payload: dict):
+    """درون ترد اجرا می‌شود — درخواست به تلگرام می‌فرستد"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("Telegram not configured; skipping send.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        r = requests.post(url, json=payload, timeout=8)
+        logger.info("Telegram send status=%s resp=%s", r.status_code, r.text)
+    except Exception as e:
+        logger.warning("Failed to send telegram message: %s", e)
+
+
+def send_telegram_message(text: str, parse_mode: str = "HTML", disable_web_page_preview: bool = True):
+    """ارسال پیام به تلگرام به صورت غیرهم‌زمان"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("Telegram not configured; message not sent.")
+        return
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": disable_web_page_preview
+    }
+    t = threading.Thread(target=_send_telegram_request, args=(payload,), daemon=True)
+    t.start()
+
+
+def _escape_html(s: str) -> str:
+    # ساده برای جلوگیری از شکستن تگ‌های HTML در parse_mode=HTML
+    if not isinstance(s, str):
+        s = str(s)
+    return (s.replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;"))
+
+
+# ---------------- Flask routes ----------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """دریافت سیگنال از TradingView"""
+    """دریافت سیگنال از TradingView، ارسال سفارش و اطلاع به تلگرام"""
     data = request.get_json(silent=True)
     logger.info("Received webhook: %s", data)
 
@@ -85,6 +138,7 @@ def webhook():
     order_type = (data.get("type") or "limit").lower()
     size = data.get("size")
     price = data.get("price", None)
+    extra = data.get("extra", {})  # هر فیلد دلخواه دیگر را نگه می‌داریم
 
     if not symbol or not signal or not size:
         return jsonify({"error": "missing required fields (symbol, signal, size)"}), 400
@@ -101,7 +155,8 @@ def webhook():
         "type": order_type,
         "size": int(size),
         "leverage": str(DEFAULT_LEVERAGE),
-        "open_type": "isolated"
+        "open_type": "isolated",
+        "client_order_id": f"tv-{int(time.time()*1000)}"
     }
 
     if order_type == "limit":
@@ -114,10 +169,48 @@ def webhook():
         if price:
             order_payload["price"] = str(price)
 
-    order_payload["client_order_id"] = f"tv-{int(time.time()*1000)}"
+    # پیام اولیه به تلگرام (اعلام دریافت سیگنال)
+    try:
+        msg = (
+            f"📩 <b>سیگنال دریافت شد</b>\n"
+            f"نماد: <code>{_escape_html(symbol)}</code>\n"
+            f"نوع: <b>{_escape_html(signal)}</b>\n"
+            f"اندازه: <code>{_escape_html(size)}</code>\n"
+            f"نوع سفارش: <code>{_escape_html(order_type)}</code>\n"
+        )
+        if price is not None:
+            msg += f"قیمت: <code>{_escape_html(price)}</code>\n"
+        if extra:
+            msg += f"اطلاعات اضافی: <code>{_escape_html(json.dumps(extra, ensure_ascii=False))}</code>\n"
+        send_telegram_message(msg)
+    except Exception:
+        logger.exception("Failed to send initial telegram message")
 
+    # ارسال سفارش به BitMart
     success, resp_data, status = submit_futures_order(order_payload)
     logger.info("BitMart response status=%s success=%s data=%s", status, success, resp_data)
+
+    # پیام نتیجه به تلگرام
+    try:
+        if success:
+            tg_text = (
+                f"✅ <b>سفارش ارسال شد</b>\n"
+                f"نماد: <code>{_escape_html(symbol)}</code>\n"
+                f"عمل: <b>{_escape_html(signal)}</b>\n"
+                f"client_order_id: <code>{_escape_html(order_payload['client_order_id'])}</code>\n"
+                f"پاسخ اکسچنج: <code>{_escape_html(json.dumps(resp_data, ensure_ascii=False))}</code>\n"
+            )
+        else:
+            tg_text = (
+                f"❌ <b>خطا در ارسال سفارش</b>\n"
+                f"نماد: <code>{_escape_html(symbol)}</code>\n"
+                f"عمل: <b>{_escape_html(signal)}</b>\n"
+                f"وضعیت HTTP: {status}\n"
+                f"پاسخ: <code>{_escape_html(json.dumps(resp_data, ensure_ascii=False))}</code>\n"
+            )
+        send_telegram_message(tg_text)
+    except Exception:
+        logger.exception("Failed to send result telegram message")
 
     if success:
         return jsonify({"ok": True, "bitmart": resp_data}), 200
@@ -142,14 +235,14 @@ def ping():
 
 # 🚀 تابع پینگ خودکار
 def self_ping():
-    url = "https://flasl-bot.onrender.com/ping"
+    url = SELF_PING_URL
     while True:
         try:
             requests.post(url, json={"msg": "stay awake"}, timeout=10)
             logger.info("🔄 Sent self-ping to stay awake.")
         except Exception as e:
             logger.warning(f"Ping failed: {e}")
-        time.sleep(240)  # هر ۴ دقیقه یک‌بار (۴×۶۰ ثانیه)
+        time.sleep(PING_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
