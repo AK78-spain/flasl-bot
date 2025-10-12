@@ -153,7 +153,7 @@ def webhook():
         "side": side,
         "mode": 1,
         "type": order_type,
-        "size": float(size),
+        "size": int(float(size)),
         "leverage": str(DEFAULT_LEVERAGE),
         "open_type": "isolated",
         "client_order_id": f"tv-{int(time.time()*1000)}"
