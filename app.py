@@ -180,12 +180,19 @@ def webhook():
     if Decimal(str(formatted_size)) == Decimal('0'):
         return jsonify({"error": "size rounds to zero for this symbol; increase size"}), 400
 
+    # تبدیل به عدد واقعی برای BitMart
+    decimals = DECIMAL_MAP.get(symbol.upper(), 3)
+    if decimals == 0:
+        size_value = int(Decimal(formatted_size))
+    else:
+        size_value = float(formatted_size)
+
     order_payload = {
         "symbol": symbol,
         "side": side,
         "mode": 1,
         "type": order_type,
-        "size": formatted_size,
+        "size": size_value,  # عدد واقعی
         "leverage": str(DEFAULT_LEVERAGE),
         "open_type": "isolated",
         "client_order_id": f"tv-{int(time.time()*1000)}"
@@ -241,42 +248,4 @@ def webhook():
                 f"پاسخ: <code>{_escape_html(json.dumps(resp_data, ensure_ascii=False))}</code>\n"
             )
         send_telegram_message(tg_text)
-    except Exception:
-        logger.exception("Failed to send result telegram message")
-
-    if success:
-        return jsonify({"ok": True, "bitmart": resp_data}), 200
-    else:
-        return jsonify({"ok": False, "status": status, "bitmart": resp_data}), 502
-
-
-@app.route('/', methods=['GET'])
-def home():
-    return "RoboTrader Bot is Running!"
-
-
-@app.route('/ping', methods=['POST'])
-def ping():
-    data = request.get_json(silent=True) or {}
-    if data.get("msg") == "stay awake":
-        logger.info("✅ I am alive (ping received)")
-        return {"status": "ok", "msg": "I am alive"}
-    return {"status": "ignored"}
-
-
-# 🚀 تابع پینگ خودکار
-def self_ping():
-    url = SELF_PING_URL
-    while True:
-        try:
-            requests.post(url, json={"msg": "stay awake"}, timeout=10)
-            logger.info("🔄 Sent self-ping to stay awake.")
-        except Exception as e:
-            logger.warning(f"Ping failed: {e}")
-        time.sleep(PING_INTERVAL_SECONDS)
-
-
-if __name__ == "__main__":
-    threading.Thread(target=self_ping, daemon=True).start()
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+   
