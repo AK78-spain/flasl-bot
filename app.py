@@ -8,6 +8,10 @@ import logging
 from flask import Flask, request, jsonify
 import requests
 import threading
+from decimal import Decimal, ROUND_DOWN, getcontext
+
+# تنظیم دقت محاسبات Decimal
+getcontext().prec = 28
 
 # basic logging
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -20,13 +24,19 @@ BITMART_API_MEMO = os.getenv("BITMART_API_MEMO", "")
 TRADINGVIEW_PASSPHRASE = os.getenv("TRADINGVIEW_PASSPHRASE", "S@leh110")
 DEFAULT_LEVERAGE = os.getenv("DEFAULT_LEVERAGE", "1")
 
-# Telegram config (required to send messages)
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ex: 123456:ABC-DEF...
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")      # ex: -1001234567890 (channel/group) or 987654321 (user)
+# Telegram config
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 API_BASE = "https://api-cloud-v2.bitmart.com"
 SELF_PING_URL = os.getenv("SELF_PING_URL", "https://flasl-bot.onrender.com/ping")
 PING_INTERVAL_SECONDS = int(os.getenv("PING_INTERVAL_SECONDS", 240))
+
+# نقشه تعداد اعشار مجاز برای هر ارز
+DECIMAL_MAP = {
+    "DOGEUSDT": 0,
+    "ARBUSDT": 1
+}
 
 # check keys
 if not BITMART_API_KEY or not BITMART_API_SECRET:
@@ -45,7 +55,29 @@ SIDE_MAP = {
     "short": 4
 }
 
+# ===== تابع فرمت سایز =====
+def format_size_for_symbol(symbol: str, size_str: str, default_decimals: int = 3) -> str:
+    """
+    سایز را بر اساس تعداد اعشار مجاز هر ارز قالب‌بندی می‌کند.
+    اگر در DECIMAL_MAP تعریف نشده باشد، پیش‌فرض 3 اعشار است.
+    """
+    try:
+        decimals = DECIMAL_MAP.get(symbol.upper(), default_decimals)
+        d = Decimal(str(size_str))
+    except Exception:
+        raise ValueError("invalid size format")
 
+    if decimals == 0:
+        q = Decimal('1')
+        out = d.quantize(q, rounding=ROUND_DOWN)
+        return str(int(out))
+    else:
+        q = Decimal(1) / (Decimal(10) ** decimals)
+        out = d.quantize(q, rounding=ROUND_DOWN)
+        fmt = f"{{0:.{decimals}f}}"
+        return fmt.format(out)
+
+# ===== توابع اصلی =====
 def make_signature(timestamp_ms: int, memo: str, body_json_str: str, secret: str) -> str:
     payload = f"{timestamp_ms}#{memo}#{body_json_str}"
     h = hmac.new(secret.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256)
@@ -53,7 +85,6 @@ def make_signature(timestamp_ms: int, memo: str, body_json_str: str, secret: str
 
 
 def submit_futures_order(order_payload: dict):
-    """ارسال سفارش فیوچرز به BitMart"""
     path = "/contract/private/submit-order"
     url = API_BASE + path
     body_json_str = json.dumps(order_payload, separators=(",", ":"), ensure_ascii=False)
@@ -80,9 +111,8 @@ def submit_futures_order(order_payload: dict):
         return (False, resp.text, resp.status_code)
 
 
-# ---------------- Telegram helper ----------------
+# ===== Telegram helpers =====
 def _send_telegram_request(payload: dict):
-    """درون ترد اجرا می‌شود — درخواست به تلگرام می‌فرستد"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.debug("Telegram not configured; skipping send.")
         return
@@ -95,23 +125,18 @@ def _send_telegram_request(payload: dict):
 
 
 def send_telegram_message(text: str, parse_mode: str = "HTML", disable_web_page_preview: bool = True):
-    """ارسال پیام به تلگرام به صورت غیرهم‌زمان"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.debug("Telegram not configured; message not sent.")
         return
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": parse_mode,
         "disable_web_page_preview": disable_web_page_preview
     }
-    t = threading.Thread(target=_send_telegram_request, args=(payload,), daemon=True)
-    t.start()
+    threading.Thread(target=_send_telegram_request, args=(payload,), daemon=True).start()
 
 
 def _escape_html(s: str) -> str:
-    # ساده برای جلوگیری از شکستن تگ‌های HTML در parse_mode=HTML
     if not isinstance(s, str):
         s = str(s)
     return (s.replace("&", "&amp;")
@@ -119,10 +144,9 @@ def _escape_html(s: str) -> str:
              .replace(">", "&gt;"))
 
 
-# ---------------- Flask routes ----------------
+# ===== Flask routes =====
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """دریافت سیگنال از TradingView، ارسال سفارش و اطلاع به تلگرام"""
     data = request.get_json(silent=True)
     logger.info("Received webhook: %s", data)
 
@@ -130,7 +154,6 @@ def webhook():
         return jsonify({"error": "invalid json"}), 400
 
     if data.get("passphrase") != TRADINGVIEW_PASSPHRASE:
-        logger.warning("Invalid passphrase attempt.")
         return jsonify({"error": "invalid passphrase"}), 403
 
     symbol = data.get("symbol")
@@ -138,7 +161,7 @@ def webhook():
     order_type = (data.get("type") or "limit").lower()
     size = data.get("size")
     price = data.get("price", None)
-    extra = data.get("extra", {})  # هر فیلد دلخواه دیگر را نگه می‌داریم
+    extra = data.get("extra", {})
 
     if not symbol or not signal or not size:
         return jsonify({"error": "missing required fields (symbol, signal, size)"}), 400
@@ -148,12 +171,21 @@ def webhook():
 
     side = SIDE_MAP[signal]
 
+    # --- اصلاح سایز بر اساس نماد ---
+    try:
+        formatted_size = format_size_for_symbol(symbol, size)
+    except ValueError:
+        return jsonify({"error": "invalid size format"}), 400
+
+    if Decimal(str(formatted_size)) == Decimal('0'):
+        return jsonify({"error": "size rounds to zero for this symbol; increase size"}), 400
+
     order_payload = {
         "symbol": symbol,
         "side": side,
         "mode": 1,
         "type": order_type,
-        "size": int(float(size)),
+        "size": formatted_size,
         "leverage": str(DEFAULT_LEVERAGE),
         "open_type": "isolated",
         "client_order_id": f"tv-{int(time.time()*1000)}"
@@ -169,13 +201,13 @@ def webhook():
         if price:
             order_payload["price"] = str(price)
 
-    # پیام اولیه به تلگرام (اعلام دریافت سیگنال)
+    # پیام اولیه به تلگرام
     try:
         msg = (
             f"📩 <b>سیگنال دریافت شد</b>\n"
             f"نماد: <code>{_escape_html(symbol)}</code>\n"
             f"نوع: <b>{_escape_html(signal)}</b>\n"
-            f"اندازه: <code>{_escape_html(size)}</code>\n"
+            f"اندازه: <code>{_escape_html(formatted_size)}</code>\n"
             f"نوع سفارش: <code>{_escape_html(order_type)}</code>\n"
         )
         if price is not None:
@@ -186,7 +218,7 @@ def webhook():
     except Exception:
         logger.exception("Failed to send initial telegram message")
 
-    # ارسال سفارش به BitMart
+    # ارسال سفارش
     success, resp_data, status = submit_futures_order(order_payload)
     logger.info("BitMart response status=%s success=%s data=%s", status, success, resp_data)
 
@@ -225,7 +257,6 @@ def home():
 
 @app.route('/ping', methods=['POST'])
 def ping():
-    """برای پینگ خودکار"""
     data = request.get_json(silent=True) or {}
     if data.get("msg") == "stay awake":
         logger.info("✅ I am alive (ping received)")
@@ -246,8 +277,6 @@ def self_ping():
 
 
 if __name__ == "__main__":
-    # اجرای پینگ خودکار در پس‌زمینه
     threading.Thread(target=self_ping, daemon=True).start()
-
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
