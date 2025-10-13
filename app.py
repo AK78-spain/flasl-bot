@@ -156,7 +156,12 @@ def webhook():
     raw_size = float(size)
     precision = SIZE_PRECISION.get(symbol, 3)
     rounded_size = round(raw_size, precision)
-    order_payload_size = int(rounded_size)
+
+    # اگر precision صفر است، int بفرستیم، در غیر اینصورت float با همان تعداد اعشار
+    if precision == 0:
+        order_payload_size = int(rounded_size)
+    else:
+        order_payload_size = rounded_size
 
     order_payload = {
         "symbol": symbol,
@@ -242,7 +247,6 @@ def ping():
     return {"status": "ignored"}
 
 
-# 🚀 تابع پینگ خودکار
 def self_ping():
     url = SELF_PING_URL
     while True:
