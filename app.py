@@ -20,7 +20,7 @@ BITMART_API_MEMO = os.getenv("BITMART_API_MEMO", "")
 TRADINGVIEW_PASSPHRASE = os.getenv("TRADINGVIEW_PASSPHRASE", "S@leh110")
 DEFAULT_LEVERAGE = os.getenv("DEFAULT_LEVERAGE", "1")
 
-# Telegram config (required to send messages)
+# Telegram config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -50,7 +50,7 @@ SIZE_PRECISION = {
     "DOGEUSDT": 0,
     "ARBUSDT": 1,
     "BTCUSDT": 3,
-    # ارزهای دیگر را می‌توانید اضافه کنید
+    # سایر ارزها را اضافه کنید
 }
 
 
@@ -61,7 +61,6 @@ def make_signature(timestamp_ms: int, memo: str, body_json_str: str, secret: str
 
 
 def submit_futures_order(order_payload: dict):
-    """ارسال سفارش فیوچرز به BitMart"""
     path = "/contract/private/submit-order"
     url = API_BASE + path
     body_json_str = json.dumps(order_payload, separators=(",", ":"), ensure_ascii=False)
@@ -152,16 +151,11 @@ def webhook():
 
     side = SIDE_MAP[signal]
 
-    # ----- اصلاح سایز سفارش بر اساس محدودیت اعشار هر ارز -----
+    # ----- اصلاح سایز سفارش برای BitMart -----
     raw_size = float(size)
     precision = SIZE_PRECISION.get(symbol, 3)
-    rounded_size = round(raw_size, precision)
-
-    # اگر precision صفر است، int بفرستیم، در غیر اینصورت float با همان تعداد اعشار
-    if precision == 0:
-        order_payload_size = int(rounded_size)
-    else:
-        order_payload_size = rounded_size
+    # ضرب در 10^precision و تبدیل به int
+    order_payload_size = int(raw_size * (10 ** precision))
 
     order_payload = {
         "symbol": symbol,
