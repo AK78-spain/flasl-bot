@@ -25,8 +25,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 API_BASE = "https://api-cloud-v2.bitmart.com"
-SELF_PING_URL = os.getenv("SELF_PING_URL", "https://flasl-bot.onrender.com/ping")
-PING_INTERVAL_SECONDS = int(os.getenv("PING_INTERVAL_SECONDS", 240))
 
 # check keys
 if not BITMART_API_KEY or not BITMART_API_SECRET:
@@ -232,27 +230,29 @@ def home():
     return "RoboTrader Bot is Running!"
 
 
-@app.route('/ping', methods=['POST'])
+# External ping endpoint for uptime monitors (fast and lightweight)
+@app.route('/ping', methods=['GET', 'POST', 'HEAD'])
 def ping():
+    """
+    برای مانیتورهای خارجی (UptimeRobot / cron-job.org) طراحی شده.
+    - GET /ping  -> پاسخ 200 سریع با JSON {"status":"ok"}
+    - POST /ping -> در صورت ارسال JSON پاسخ مشابه می‌دهد (برای سازگاری)
+    - HEAD /ping -> پاسخ 200 بدون بدنه
+    """
+    if request.method == 'HEAD':
+        return ('', 200)
+    if request.method == 'GET':
+        return jsonify({"status": "ok", "ts": int(time.time())}), 200
+
+    # POST: اگر خواستی توسط سرویس دیگری POST بزنند، سازگار باشیم
     data = request.get_json(silent=True) or {}
-    if data.get("msg") == "stay awake":
-        logger.info("✅ I am alive (ping received)")
-        return {"status": "ok", "msg": "I am alive"}
-    return {"status": "ignored"}
-
-
-def self_ping():
-    url = SELF_PING_URL
-    while True:
-        try:
-            requests.post(url, json={"msg": "stay awake"}, timeout=10)
-            logger.info("🔄 Sent self-ping to stay awake.")
-        except Exception as e:
-            logger.warning(f"Ping failed: {e}")
-        time.sleep(PING_INTERVAL_SECONDS)
+    if data.get("msg") == "stay awake" or data == {}:
+        # پیام لاگ کوتاه اما مفید
+        logger.info("✅ External ping received.")
+        return jsonify({"status": "ok", "msg": "ping received"}), 200
+    return jsonify({"status": "ignored"}), 200
 
 
 if __name__ == "__main__":
-    threading.Thread(target=self_ping, daemon=True).start()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
