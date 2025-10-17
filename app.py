@@ -48,6 +48,8 @@ SIZE_PRECISION = {
     "DOGEUSDT": 0,
     "ARBUSDT": 1,
     "BTCUSDT": 3,
+    "BNBUSDT": 2,
+    "SOLUSDT": 0,
     # سایر ارزها را اضافه کنید
 }
 
